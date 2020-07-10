@@ -19,6 +19,8 @@ import numpy as np
 import codecs
 from config import *
 from utils import *
+
+
 class DataProcessor(object):
     """Base class for data converters for sequence classification data sets."""
 
