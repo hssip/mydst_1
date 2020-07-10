@@ -36,21 +36,8 @@ def create_model(data_generator):
     def attend(seq, cond, sent_mask):
         a = fluid.layers.expand(x = fluid.layers.unsqueeze(cond, axes=[1]), 
                                 expand_times=[1, fluid.layers.shape(seq)[1], 1])
-        # print('seq size: %s'%(str(seq.shape)))
-        # print('cond size: %s'%(str(cond.shape)))
-        # print('a size: %s'%(str(a.shape)))
-        scores_ = fluid.layers.reduce_sum(fluid.layers.elementwise_mul(a, seq),2)
-        # a = []
-        # for i in seq
-        # for i in range(args['batch_size']):
-        #     l = scores_[i].shape[0]
-        #     b = []
 
-        #     for j in range(0, max_lens):
-                
-        #     if  l < max_lens:
-        #         scores_[i, l:] = -np.inf
-        # mask = fluid.Tensor()
+        scores_ = fluid.layers.reduce_sum(fluid.layers.elementwise_mul(a, seq),2)
         sent_mask = fluid.layers.cast(fluid.layers.expand(sent_mask, expand_times=[args['all_slot_num'], 1]),dtype='float32')
         scores = fluid.layers.elementwise_add(scores_, sent_mask)
         scores = fluid.layers.softmax(scores_, axis=1)
@@ -64,15 +51,14 @@ def create_model(data_generator):
         print('context size: %s'%(str(context.shape)))
         return context
 
+    def vocab_atten():
+        return
+
     def _slot_gate(encoder_outs, encoder_last_h, slots_embedding, sent_mask):
 
         slots_embedding1 = fluid.layers.transpose(x= slots_embedding, perm=[1,0,2])
         slots_embedding1 = fluid.layers.reshape(x=slots_embedding1, shape=[args['all_slot_num'] * args['batch_size'], -1, args['slot_emb_dim']])
         dec_input = fluid.layers.dropout(slots_embedding1, dropout_prob=args['dropout'])
-        # dec_input - fluid.layers.reshape(x=dec_input, )
-
-        # encoder_last_h = fluid.layers.unsqueeze(encoder_last_h, axes=[0])
-
         hidden = fluid.layers.expand(encoder_last_h, expand_times=[args['all_slot_num'], 1])
         
         cell = fluid.layers.GRUCell(hidden_size=args['slot_emb_dim'])
@@ -82,9 +68,9 @@ def create_model(data_generator):
 
         enc_out = fluid.layers.expand(encoder_outs, expand_times=[args['all_slot_num'], 1, 1])
         context = attend(enc_out, hidden, sent_mask)
-        a = fluid.layers.fc(context, size = args['gate_kind'], act='softmax')
+        gate_probs = fluid.layers.fc(context, size = args['gate_kind'], act='softmax')
 
-        return a 
+        return gate_probs 
 
     def _net_conf_at(word, sent_mask, intent_label, gates_label, slots, sent_mask1):
         """
