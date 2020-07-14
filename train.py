@@ -47,14 +47,14 @@ train_prog = fluid.Program()
 
 with fluid.program_guard(train_prog, startup_prog):
     with fluid.unique_name.guard():
-        train_reader, loss, acc, intent_probs, intent_labels, gate_probs = model.create_model(train_data_processor)
-        optimizer = fluid.optimizer.SGD(learning_rate=args['base_lr'])
+        train_reader, loss, acc, intent_probs, intent_labels, gate_probs, generate_loss, generate_acc = model.create_model(train_data_processor)
+        optimizer = fluid.optimizer.Adagrad(learning_rate=args['base_lr'])
         #optimizer = opt.optimization(
         #                loss=loss,
         #                learning_rate=args['base_lr'],
         #                train_program=train_prog,
         #                startup_prog=startup_prog)
-        optimizer.minimize(loss)
+        optimizer.minimize(loss + generate_loss)
 train_reader.set_batch_generator(train_batch_reader, places=place)
 exe = fluid.Executor(place)
 exe.run(startup_prog)
@@ -76,17 +76,19 @@ step_count = 0
 epoch_count = 0
 train_loss_list = []
 train_acc_list = []
+train_generate_loss_list = []
+train_generate_acc_list = []
 # i = 0
 while True:
     try:
         # i += 1
         # if i >= 10:
             # break
-        step_begin_time = time.time()
+        # step_begin_time = time.time()
         #np_loss, np_acc = train_exe.run(program=train_prog, fetch_list=[loss.name, acc.name])
         #np_loss, np_acc, np_intent_probs = train_exe.run(program=train_prog, fetch_list=[loss.name, acc.name, intent_probs.name])
-        np_loss, np_acc, np_intent_probs, np_gate_probs = train_exe.run(program=train_prog, fetch_list=[loss.name, acc.name, intent_probs.name, gate_probs.name])
-        step_end_time = time.time()
+        np_loss, np_acc, np_intent_probs, np_gate_probs, np_generate_loss, np_generate_acc = train_exe.run(program=train_prog, fetch_list=[loss.name, acc.name, intent_probs.name, gate_probs.name, generate_loss.name, generate_acc.name])
+        # step_end_time = time.time()
 
         fout = open('temp.txt', mode='a+', encoding='utf8')
         stra = str(np.argmax(np_gate_probs, axis=-1).tolist()) + '\n'
@@ -95,13 +97,21 @@ while True:
 
         train_acc_list.append(np_acc)
         train_loss_list.append(np_loss)
+        train_generate_loss_list.append(np_generate_loss)
+        train_generate_acc_list.append(np_generate_acc)
         step_count += 1
         if step_count % args['show_step_num'] == 0:
-            print ('epoch: %d, step: %d, avg_loss: %f, acc: %f, time: %f' % \
+            # print ('epoch: %d, step: %d, avg_loss: %f, acc: %f, time: %f' % \
+            #       (epoch_count, step_count,
+            #        np.array(train_loss_list).mean(),
+            #        np.array(train_acc_list).mean(),
+            #        step_end_time - step_begin_time))
+            print ('epoch: %d, step: %d, slot_loss: %f, slot_acc: %f, gene_loss: %f, gene_acc: %f' % \
                   (epoch_count, step_count,
                    np.array(train_loss_list).mean(),
                    np.array(train_acc_list).mean(),
-                   step_end_time - step_begin_time))
+                   np.array(train_generate_loss_list).mean(),
+                   np.array(train_generate_acc_list).mean()))
 
         #save model and do validation
         if epoch_count < train_data_processor.get_cur_epoch_idx():

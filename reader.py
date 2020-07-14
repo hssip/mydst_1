@@ -48,6 +48,7 @@ class DataProcessor(object):
 
     def _add_vocab(self, field_name, word_list):
         assert isinstance(word_list, list), 'training data field is not list'
+
         if field_name not in self._word2idx:
             self._word2idx[field_name] = {}
             self._idx2word[field_name] = {}
@@ -78,7 +79,9 @@ class DataProcessor(object):
         sens_slot = np.array([[i for i in inst[3]] for inst in insts])
 
         sens_mask1 = np.array([ [0.0] * len(inst[0]) + [-np.inf] * (max_len - len(inst[0])) for inst in insts]).astype('float32')
-
+        
+        # max_res_len = 10
+        sens_generate = np.array([i for i in inst[4] for inst in insts]).reshape(args['batch_size'], -1)
 
 
         '''
@@ -86,7 +89,7 @@ class DataProcessor(object):
             for w in s:
                 print (w)
         '''
-        return sens_word, sens_mask, sens_intent, sens_gate, sens_slot, sens_mask1
+        return sens_word, sens_mask, sens_intent, sens_gate, sens_slot, sens_mask1, sens_generate
 
     def get_examples(self):
         examples = []
@@ -102,13 +105,14 @@ class DataProcessor(object):
                     user_uttr = turn['transcript'].strip().split()
                     domain = turn['domain']
                     uttr_list += sys_uttr + ['SEP-SYS'] + user_uttr + ['SEP-UTTR']
-                    gates = belief2gate(turn['belief_state'])
+                    gates, generates = belief2gate_generate(turn['belief_state'])
                     slots = raw_slots
-                    examples.append({'utterances': uttr_list + ['EOS'], 'domain': [domain], 'gate':gates, 'slot':slots })
+                    examples.append({'utterances': uttr_list + ['EOS'], 'domain': [domain], 'gate':gates, 'slot':slots, 'generate':generates })
                     self._add_vocab('utterances', sys_uttr + user_uttr)
                     self._add_vocab('domain', [domain])
                     self._add_vocab('gate', gates)
                     self._add_vocab('slot', slots)
+                    self._add_vocab('utterances', generates)
                 #print [sample_json['word_nums'], sample_json['istags'], [sample_json['intent_num']]]
                 #np_example = np.array([sample_json['word_nums'], sample_json['istags'], [sample_json['intent_num']]])
                 #print np_example.shape
@@ -121,16 +125,18 @@ class DataProcessor(object):
             domain = e['domain']
             gates = e['gate']
             slots = e['slot']
+            generates = e['generate']
             uttr_idx = self.word2idx('utterances', uttr)
             domain_idx = self.word2idx('domain', domain)
             gate_idx = self.word2idx('gate', gates)
             slot_idx = self.word2idx('slot', slots)
+            generate_idx = self.word2idx('utterances', generates)
             # context_len = [len(uttr_idx)]
             fout = open('tokens.txt', mode = 'a+', encoding='utf8')
             stra = str(e) + '\n'
             fout.write(stra)
             fout.close()
-            examples_idx.append({ 'utterances': uttr_idx, 'domain': domain_idx, 'gate':gate_idx, 'slot':slot_idx})
+            examples_idx.append({ 'utterances': uttr_idx, 'domain': domain_idx, 'gate':gate_idx, 'slot':slot_idx, 'generate': generate_idx})
 
 
         self._print_examples(examples, examples_idx)
@@ -146,10 +152,11 @@ class DataProcessor(object):
         assert type(word_list) == list, 'list type error in word2idx' 
 
         idx_list = []
+
         for w in word_list:
             if field_name == 'domain':
                 idx_list.append(self._word2idx['domain'][w])
-            elif field_name == 'utterances':
+            elif field_name == 'utterances' or field_name == 'generate':
                 idx_list.append(self._word2idx['utterances'][w] if w in self._word2idx['utterances'] else self._word2idx['utterances']['UNK'])
             elif field_name == 'gate':
                 idx_list.append(self._word2idx['gate'][w])
@@ -184,7 +191,7 @@ class DataProcessor(object):
                 for (i, example) in enumerate(examples_idx):
                     #yield example
                     #print (example)
-                    yield [example['utterances'], example['domain'], example['gate'], example['slot']]
+                    yield [example['utterances'], example['domain'], example['gate'], example['slot'], example['generate']]
 
         def batch_reader():
             batch = []

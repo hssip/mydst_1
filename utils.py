@@ -133,5 +133,25 @@ def slots2gate(slots):
 
     return gates
 
-def belief2gate(belief_state):
-    return slots2gate(process_belief_state(belief_state))
+def slots2generate(slots):
+    result = []
+    max_res_length = 10
+    for key in raw_slots:
+        arr = key.split('-')
+        domain = arr[0]
+        slot = arr[1]
+        value_ = slots[domain][slot].split()
+        raw_len = len(value_)
+        value_ += ['PAD'] * (max_res_length - raw_len)
+        result.append(value_)
+    
+    result = [x for y in result for x in y]
+
+    # result = ['none' if x == '' else x for x in temp]
+    return result
+
+def belief2gate_generate(belief_state):
+    slots = process_belief_state(belief_state)
+    gate = slots2gate(slots)
+    generate = slots2generate(slots)
+    return gate, generate
