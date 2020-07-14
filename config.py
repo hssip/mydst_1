@@ -41,7 +41,7 @@ parser.add_argument('--is_test', help='', required=False, type=int, default=0)
 parser.add_argument('--test_file', help='', required=False, type=str, default='./data/test_dials.json')
 parser.add_argument('--test_model', help='', required=False, type=str, default='.')
 parser.add_argument('--save_epoch', help='', required=False, type=int, default=1)
-parser.add_argument('--show_step_num', help='', required=False, type=int, default=100)
+parser.add_argument('--show_step_num', help='', required=False, type=int, default=1)
 parser.add_argument('--train_epoch_num', help='', required=False, type=int, default=20)
 parser.add_argument('--data_path', help='', required=False, type=str, default='./data')
 

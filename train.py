@@ -28,7 +28,7 @@ else:
     dev_count = 1
     print ('CPU used')
 
-# place = fluid
+# place = fluid.CPUPlace()
 
 #load data
 train_data_processor = reader.DataProcessor(

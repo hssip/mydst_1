@@ -6,6 +6,7 @@ import paddle
 import paddle.fluid as fluid
 import numpy as np
 from config import *
+from utils import *
 
 
 def create_model(data_processor):
@@ -48,21 +49,67 @@ def create_model(data_processor):
                                 expand_times=[1,1,args['slot_emb_dim']])
         a = fluid.layers.elementwise_mul(a, seq)
         context = fluid.layers.reduce_sum(a,dim=1)
-        print('context size: %s'%(str(context.shape)))
+        
         return context, scores
 
     def attend_vocab(seq, cond):
         scores_ = fluid.layers.matmul(cond, fluid.layers.transpose(x=seq, perm=[1,0]))
-        scores = fluid.layers.softmax(scores_, dim = 1)
+        scores = fluid.layers.softmax(scores_, axis=1)
         return scores
     
-    def while_cond(i):
-        return i < 10
+    def while_cond(i, n, hidden, dec_input, encoder_outs, words_emb, story, all_point_outputs_list):
+        return i < n
 
-    def while_body(i):
+    def while_body(i, n, hidden, dec_input, encoder_outs, words_emb, story, all_point_outputs_list):
+        # cell = fluid.layers.GRUCell(hidden_size=args['slot_emb_dim'])
+        # dec_outs, hidden = fluid.layers.rnn(cell = cell,
+        #                                     inputs = dec_input,
+        #                                     initial_states= hidden)
+        init_c = fluid.layers.fill_constant(shape=[1, args['batch_size'] * args['all_slot_num'], args['slot_emb_dim']], dtype='float32', value=0.0 )
+        dec_outs, hidden, _ = fluid.layers.lstm(input = dec_input,
+                                            init_h= hidden,
+                                            init_c=init_c,
+                                            max_len=400,
+                                            hidden_size=args['slot_emb_dim'],
+                                            num_layers=1)
+
+        enc_out = fluid.layers.expand(encoder_outs, expand_times=[args['all_slot_num'], 1, 1])
+        context, prob = attend(enc_out, hidden, sent_mask)
+        gate_probs = fluid.layers.fc(context, size = args['gate_kind'], act='softmax')
+        # gate_probs = fluid.layers.softmax(fluid.layers.matmul(context, hidden2gate))
         
-        i += 1
-        return i
+        
+        p_vocab = attend_vocab(words_emb, hidden)
+        p_gen_vec=  fluid.layers.concat([fluid.layers.squeeze(dec_outs, axes=[1]), context, fluid.layers.squeeze(dec_input, axes=[1])], axis=-1)
+        vocab_pointer_switches = fluid.layers.fc(p_gen_vec, size=1,act='sigmoid')
+        # vocab_pointer_switches = fluid.layers.sigmoid(fluid.layers.matmul(p_gen_vec, hidden2pgen))
+        p_context_ptr = fluid.layers.fill_constant(shape=[args['batch_size'] * args['all_slot_num'], data_processor.get_vocab_size('utterances')],dtype='float32',value=0.0)
+        
+        # print('p_context_ptr size: %s'%(str(p_context_ptr.shape)))
+        # print('story size: %s'%(str(story.shape)))
+        # print('prob size: %s'%(str(prob.shape)))
+
+        story_index = fluid.layers.unsqueeze(fluid.layers.expand(story, expand_times=[args['all_slot_num'], 1]),axes=[2])
+        updates = fluid.layers.expand(fluid.layers.unsqueeze(prob,axes=[2]), expand_times=[1,1,data_processor.get_vocab_size('utterances')])
+        p_context_ptr = fluid.layers.scatter_nd_add(ref = p_context_ptr, index = story_index, updates=updates)
+
+        print('vocab_pointer_switches size: %s'%(str(vocab_pointer_switches.shape)))
+        print('p_context_ptr size: %s'%(str(p_context_ptr.shape)))
+        print('p_vocab size: %s'%(str(p_vocab.shape)))
+
+
+        final_p_vocab = fluid.layers.expand((1 - vocab_pointer_switches), expand_times=[1, data_processor.get_vocab_size('utterances')]) * p_context_ptr + \
+                        fluid.layers.expand(vocab_pointer_switches, expand_times=[1, data_processor.get_vocab_size('utterances')]) * p_vocab
+
+        # p_final_word = fluid.layers.argmax(final_p_vocab, axis=1)
+
+        npfw = fluid.layers.reshape(final_p_vocab,shape=[args['all_slot_num'], args['batch_size'], -1 ,data_processor.get_vocab_size('utterances')])
+        # if i == 0:
+        #     all_point_outputs_list.append(gate_probs)
+        # else:
+        #     all_point_outputs_list.append(npfw)
+        i = i + 1
+        return i, n, hidden, dec_input, encoder_outs, words_emb, story, all_point_outputs_list
 
     def get_slot_acc(gate_prob, gates_label, generate_prob, generates_label):
         #gate_prob (slot*batch)*gate
@@ -86,6 +133,7 @@ def create_model(data_processor):
         generate_loss = fluid.layers.mean(fluid.layers.cross_entropy(generate_prob, fluid.layers.unsqueeze(generates_label,axes=[2])))
 
         return gate_acc, gate_loss, generate_acc, generate_loss
+    
 
     def _slot_gate(encoder_outs, encoder_last_h, slots_embedding, sent_mask, words_emb, story):
 
@@ -93,61 +141,111 @@ def create_model(data_processor):
         slots_embedding1 = fluid.layers.reshape(x=slots_embedding1, shape=[args['all_slot_num'] * args['batch_size'], -1, args['slot_emb_dim']])
         dec_input = fluid.layers.dropout(slots_embedding1, dropout_prob=args['dropout'])
         hidden = fluid.layers.expand(encoder_last_h, expand_times=[args['all_slot_num'], 1])
-        cell = fluid.layers.GRUCell(hidden_size=args['slot_emb_dim'])
+        
 
-        hidden2gate = fluid.layers.create_parameter(shape=[args['slot_emb_dim'], args['gate_kind']], dtype='float32')
-        hidden2pgen = fluid.layers.create_parameter(shape=[args['slot_emb_dim'] * 3, 1],dtype='float32')
+        # hidden2gate = fluid.layers.create_parameter(shape=[args['slot_emb_dim'], args['gate_kind']], dtype='float32')
+        # hidden2pgen = fluid.layers.create_parameter(shape=[args['slot_emb_dim'] * 3, 1],dtype='float32')
 
-        all_point_outputs_list = []
-
-        # fluid.layers.while_loop(cond=while_cond, body=while_body,loop_vars=[i, ])
-        for i in range(10):
-            pass
-            dec_outs, hidden = fluid.layers.rnn(cell = cell,
-                                                inputs = dec_input,
-                                                initial_states= hidden)
-
+        # all_point_outputs_list = fluid.Tensor()
+        # all_point_outputs_list = LodTensor_to_Tensor(all_point_outputs_list)
+        # all_point_outputs_list.set(np.zeros(shape=(args['all_slot_num'], args['batch_size'], 10 ,data_processor.get_vocab_size('utterances')), 
+                                    # dtype='float32'),
+                                # fluid.CPUPlace())
+        
+        all_point_outputs_list = fluid.LoDTensorArray()
+        
+        out_gate_probs = []
+        i = fluid.layers.fill_constant(shape=[1], dtype='int64', value=0)     
+        n = fluid.layers.fill_constant(shape=[1], dtype='int64', value=10)
+        cond = fluid.layers.less_than(x=i, y=n)
+        while_op = fluid.layers.While(cond = cond)
+        with while_op.block():
+        # fluid.layers.arr
+        # i, n, hidden, dec_input, encoder_outs, words_emb, story, all_point_outputs_list
+        # i, n, hidden, dec_input, encoder_outs, words_emb, story, all_point_outputs_list = \
+        # fluid.layers.while_loop(cond=while_cond, 
+        #                         body=while_body,
+        #                         loop_vars=[i, n, hidden, dec_input, encoder_outs, words_emb, story, all_point_outputs_list])
+        # for i in range(10):
+            # cell = fluid.layers.GRUCell(hidden_size=args['slot_emb_dim'])
+            # dec_outs, hidden = fluid.layers.rnn(cell = cell,
+            #                                     inputs = dec_input,
+            #                                     initial_states= hidden)
+            init_c = fluid.layers.fill_constant(shape=[1, args['batch_size'] * args['all_slot_num'], args['slot_emb_dim']], dtype='float32', value=0.0 )
+            dec_outs, hidden, _ = fluid.layers.lstm(input = dec_input,
+                                                init_h= fluid.layers.unsqueeze(hidden, axes=[0]),
+                                                init_c=init_c,
+                                                max_len=400,
+                                                hidden_size=args['slot_emb_dim'],
+                                                num_layers=1)
+            hidden = fluid.layers.squeeze(hidden, axes=[0])
             enc_out = fluid.layers.expand(encoder_outs, expand_times=[args['all_slot_num'], 1, 1])
             context, prob = attend(enc_out, hidden, sent_mask)
-            # gate_probs = fluid.layers.fc(context, size = args['gate_kind'], act='softmax')
-            gate_probs = fluid.layers.softmax(fluid.layers.matmul(context, hidden2gate))
+            gate_probs = fluid.layers.fc(context, size = args['gate_kind'], act='softmax')
+            # gate_probs = fluid.layers.softmax(fluid.layers.matmul(context, hidden2gate))
+
+            if i == 0:
+                out_gate_probs = gate_probs
             
             
             p_vocab = attend_vocab(words_emb, hidden)
             p_gen_vec=  fluid.layers.concat([fluid.layers.squeeze(dec_outs, axes=[1]), context, fluid.layers.squeeze(dec_input, axes=[1])], axis=-1)
-            # vocab_pointer_switches = fluid.layers.fc(p_gen_vec, size=1,act='sigmoid')
-            vocab_pointer_switches = fluid.layers.sigmoid(fluid.layers.matmul(p_gen_vec, hidden2pgen))
-            p_context_ptr = fluid.layers.fill_constant(shape=p_vocab.shape,dtype='float32',value=0.0)
-            p_context_ptr = fluid.layers.scatter_nd_add(p_context_ptr, fluid.layers.expand(story, expand_times=[args['all_slot_num'], 1]), updates=prob)
+            vocab_pointer_switches = fluid.layers.fc(p_gen_vec, size=1,act='sigmoid')
+            # vocab_pointer_switches = fluid.layers.sigmoid(fluid.layers.matmul(p_gen_vec, hidden2pgen))
+            p_context_ptr = fluid.layers.fill_constant(shape=[args['batch_size'] * args['all_slot_num'], data_processor.get_vocab_size('utterances')],dtype='float32',value=0.0)
+            
 
-            final_p_vocab = fluid.layers.expand_as((1 - vocab_pointer_switches), p_context_ptr) * p_context_ptr + \
-                            fluid.layers.expand_as(vocab_pointer_switches, p_context_ptr) * p_vocab
+            story_index = fluid.layers.unsqueeze(fluid.layers.expand(story, expand_times=[args['all_slot_num'], 1]),axes=[2])
+            updates = fluid.layers.expand(fluid.layers.unsqueeze(prob,axes=[2]), expand_times=[1,1,data_processor.get_vocab_size('utterances')])
+            p_context_ptr = fluid.layers.scatter_nd_add(ref = p_context_ptr, index = story_index, updates=updates)
 
-            p_final_word = fluid.layers.argmax(final_p_vocab, axis=1)
+            # print('vocab_pointer_switches size: %s'%(str(vocab_pointer_switches.shape)))
+            # print('p_context_ptr size: %s'%(str(p_context_ptr.shape)))
+            # print('p_vocab size: %s'%(str(p_vocab.shape)))
 
-            npfw = fluid.layers.reshape(p_final_word,shape=[args['all_slot_num'], args['batch_size'], -1 ,data_processor.get_vocab_size('utterances')])
+
+            final_p_vocab = fluid.layers.expand((1 - vocab_pointer_switches), expand_times=[1, data_processor.get_vocab_size('utterances')]) * p_context_ptr + \
+                            fluid.layers.expand(vocab_pointer_switches, expand_times=[1, data_processor.get_vocab_size('utterances')]) * p_vocab
+
+            # p_final_word = fluid.layers.argmax(final_p_vocab, axis=1)
+
+            npfw = fluid.layers.reshape(final_p_vocab,shape=[args['all_slot_num'], args['batch_size'], -1 ,data_processor.get_vocab_size('utterances')])
+            # if i == 0:
+            #     c = npfw
+            # else:
+            #     c = fluid.layers.concat([c, npfw], axis=2)
             all_point_outputs_list.append(npfw)
-            # dec_input = 
-        all_point_outputs = fluid.layers.concat(all_point_outputs_list, axis=2)
+            i=fluid.layers.increment(x=i, value=1, in_place=True)
+            fluid.layers.less_than(x=i, y=n, cond=cond)
+            # all_point_outputs_list.append(npfw)
+            # all_point_outputs_list[:, :, i, :] = npfw
+            # dec_input =
+        # gate_probs = all_point_outputs_list[0] 
+        # all_point_outputs = fluid.layers.concat(all_point_outputs_list, axis=2)
+        c = fluid.layers.reshape(x=c, shape=[args['all_slot_num'], args['batch_size'], -1 ,data_processor.get_vocab_size('utterances')])
+        # all_point_outputs_list
+        return out_gate_probs, c
 
-        return gate_probs, all_point_outputs
-
-    def _net_conf_at(word, sent_mask, intent_label, gates_label, slots, sent_mask1, generates_label):
+    def _net_conf_at(all_word, word, sent_mask, intent_label, gates_label, slots, sent_mask1, generates_label):
         """
         Configure the network
         """
-        all_word = fluid.Tensor().set(np.array([i for i in range(data_processor.get_vocab_size('utterance'))]))
+        # tensor_all_word = fluid.Tensor()
+        # tensor_all_word.set(np.array([i for i in range(data_processor.get_vocab_size('utterances'))]), fluid.CPUPlace())
         
+        # all_word = fluid.layers.fill_constant(shape=[data_processor.get_vocab_size('utterances')], dtype='float32', value=tensor_all_word)
+
         all_word_emb = fluid.embedding(
             input=all_word,
             size=[data_processor.get_vocab_size('utterances'), args['word_emb_dim']],
             param_attr=fluid.ParamAttr(
-                name='word_emb',
+                name='all_word_emb',
                 initializer=fluid.initializer.Normal(0., args['word_emb_dim']**-0.5)))
         cat_list = []
-        for batch_word in word:
-            cat_list.append(fluid.layers.gather(input=all_word_emb, index=batch_word))
-        word_emb = fluid.layers.concat(cat_list, axis=0)
+        for i in range(args['batch_size']):
+            cat_list.append(fluid.layers.gather(input=all_word_emb, index=word[i]))
+        word_emb = fluid.layers.reshape(fluid.layers.concat(cat_list, axis=0),shape=[args['batch_size'], -1, args['slot_emb_dim']])
+        print('word_emb size: %s'%(str(word_emb.shape)))
         word_emb = fluid.layers.scale(x=word_emb, scale=args['word_emb_dim']**0.5)
         if args['dropout'] > 0.00001:
             word_emb = fluid.layers.dropout(word_emb, dropout_prob=args['dropout'], seed=None, is_test=False)
@@ -197,16 +295,16 @@ def create_model(data_processor):
                                 encoder_last_h=bigru_last_h,
                                 slots_embedding=slot_emb,
                                 sent_mask=sent_mask1,
-                                word_emb=word_emb,
+                                words_emb=all_word_emb,
                                 story=word)
         gates_label1 = fluid.layers.transpose(gates_label, perm=[1, 0])     
         gates_label1 = fluid.layers.reshape(gates_label1, shape=[args['batch_size'] * args['all_slot_num'], -1])
         
         
-        generates_label1 = fluid.layers.reshape(generates_label1, shape=[args['batch_size'],  args['all_slot_num'], -1])
-        generates_label1 = fluid.layers.transpose(generates_label, perm=[1, 0])
-        generates_label1 = fluid.layers.reshape(generates_label1, shape=[args['batch_size'] * args['all_slot_num'], -1])
-        generate_prob = fluid.layers.transpose(generate_prob, perm=[0,1])
+        generates_label_ = fluid.layers.reshape(generates_label, shape=[args['batch_size'],  args['all_slot_num'], -1])
+        generates_label_ = fluid.layers.transpose(generates_label_, perm=[1, 0, 2])
+        generates_label_ = fluid.layers.reshape(generates_label_, shape=[args['batch_size'] * args['all_slot_num'], -1])
+        # generate_prob = fluid.layers.transpose(generate_prob, perm=[1, 0, 2])
         ############## slot end #########################
         
         # loss = fluid.layers.mean(x=ce_loss)
@@ -218,7 +316,7 @@ def create_model(data_processor):
         gate_acc, gate_loss, generate_acc, generate_loss = get_slot_acc(gate_prob=gate_prob,
                                                                         gates_label=gates_label1,
                                                                         generate_prob=generate_prob,
-                                                                        generates_label=generates_label1)
+                                                                        generates_label=generates_label_)
 
         ########## chose loss and acc###############
         # loss = gate_loss
@@ -227,7 +325,7 @@ def create_model(data_processor):
 
         return gate_loss, gate_acc, intent_probs, gate_prob, generate_loss, generate_acc
 
-    word = fluid.data(name='word', shape=[None, None], dtype='int64', lod_level=0)
+    word = fluid.data(name='word', shape=[args['batch_size'], None], dtype='int64', lod_level=0)
     sent_mask = fluid.data(name='sent_mask', shape=[None, None], dtype='int64', lod_level=0)
     intent_label = fluid.data(name="intent_label", shape=[None, 1], dtype='int64', lod_level=0)
     gates_label = fluid.data(name="gates_label", shape=[args['batch_size'], args['all_slot_num']], dtype='int64', lod_level=0)
@@ -236,8 +334,10 @@ def create_model(data_processor):
     sent_mask1 = fluid.data(name='sent_mask1', shape=[None, None], dtype='float32', lod_level=0)
     generates_label = fluid.data(name = 'generates_label', shape=[args['batch_size'], None], dtype='int64', lod_level=0)
     
-    loader = fluid.io.DataLoader.from_generator(feed_list=[word, sent_mask, intent_label, gates_label, slots, sent_mask1, generates_label], capacity=16, iterable=False)
-    gate_loss, gate_acc, intent_probs, gate_probs, generate_loss, generate_acc = _net_conf_at(word, sent_mask, intent_label, gates_label, slots, sent_mask1, generates_label)
+    all_word = fluid.data(name='all_word', shape=[None], dtype='int64', lod_level=0)
+
+    loader = fluid.io.DataLoader.from_generator(feed_list=[all_word, word, sent_mask, intent_label, gates_label, slots, sent_mask1, generates_label], capacity=16, iterable=False)
+    gate_loss, gate_acc, intent_probs, gate_probs, generate_loss, generate_acc = _net_conf_at(all_word, word, sent_mask, intent_label, gates_label, slots, sent_mask1, generates_label)
     return loader, gate_loss, gate_acc, intent_probs, intent_label, gate_probs, generate_loss, generate_acc
 
 

@@ -88,7 +88,7 @@ def process_belief_state(belief_state):
             arr = belief['slots'][0][0].lower().split('-')
             if arr[0] not in domain_list:
                 # print(belief_state)
-                return []
+                return result
             temp = arr[1]
             if 'book' in temp:
                 temp = temp.split(' ')[1]
@@ -134,6 +134,9 @@ def slots2gate(slots):
     return gates
 
 def slots2generate(slots):
+    # print(slots)
+    # if not slots:
+    #     return []
     result = []
     max_res_length = 10
     for key in raw_slots:
@@ -155,3 +158,11 @@ def belief2gate_generate(belief_state):
     gate = slots2gate(slots)
     generate = slots2generate(slots)
     return gate, generate
+
+def LodTensor_to_Tensor(lod_tensor):
+    lod = lod_tensor.lod()
+    array = np.array(lod_tensor)
+    new_array = []
+    for i in range(len(lod[0]) - 1):
+        new_array.append(array[lod[0][i]:lod[0][i + 1]])
+    return new_array

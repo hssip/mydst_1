@@ -81,15 +81,15 @@ class DataProcessor(object):
         sens_mask1 = np.array([ [0.0] * len(inst[0]) + [-np.inf] * (max_len - len(inst[0])) for inst in insts]).astype('float32')
         
         # max_res_len = 10
-        sens_generate = np.array([i for i in inst[4] for inst in insts]).reshape(args['batch_size'], -1)
+        sens_generate = np.array([[i for i in inst[4]] for inst in insts]).reshape(args['batch_size'], -1)
 
-
+        all_word = np.array([i for i in range(self.get_vocab_size('utterances'))])
         '''
         for s in sens_word:
             for w in s:
                 print (w)
         '''
-        return sens_word, sens_mask, sens_intent, sens_gate, sens_slot, sens_mask1, sens_generate
+        return all_word, sens_word, sens_mask, sens_intent, sens_gate, sens_slot, sens_mask1, sens_generate
 
     def get_examples(self):
         examples = []
